@@ -192,18 +192,7 @@ public:
 private:
 	static const VkPipelineCreationFeedbackCreateInfo *GetPipelineCreationFeedback(const void *pNext)
 	{
-		const VkBaseInStructure *extensionCreateInfo = reinterpret_cast<const VkBaseInStructure *>(pNext);
-		while(extensionCreateInfo)
-		{
-			if(extensionCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO)
-			{
-				return reinterpret_cast<const VkPipelineCreationFeedbackCreateInfo *>(extensionCreateInfo);
-			}
-
-			extensionCreateInfo = extensionCreateInfo->pNext;
-		}
-
-		return nullptr;
+		return vk::GetExtendedStruct<VkPipelineCreationFeedbackCreateInfo>(pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
 	}
 
 	void pipelineCreationBegins()
@@ -251,14 +240,85 @@ private:
 	const VkPipelineCreationFeedbackCreateInfo *pipelineCreationFeedback = nullptr;
 };
 
+bool getRobustBufferAccess(VkPipelineRobustnessBufferBehaviorEXT behavior, bool inheritRobustBufferAccess)
+{
+	// Based on behavior:
+	// - <not provided>:
+	//   * For pipelines, use device's robustBufferAccess
+	//   * For shaders, use pipeline's robustBufferAccess
+	//     Note that pipeline's robustBufferAccess is already set to device's if not overriden.
+	// - Default: Use device's robustBufferAccess
+	// - Disabled / Enabled: Override to disabled or enabled
+	//
+	// This function is passed "DEFAULT" when override is not provided, and
+	// inheritRobustBufferAccess is appropriately set to the device or pipeline's
+	// robustBufferAccess
+	switch(behavior)
+	{
+	case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT:
+		return inheritRobustBufferAccess;
+	case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
+		return false;
+	case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
+		return true;
+	default:
+		UNSUPPORTED("Unsupported robustness behavior");
+		return true;
+	}
+}
+
+bool getRobustBufferAccess(const VkPipelineRobustnessCreateInfoEXT *overrideRobustness, bool deviceRobustBufferAccess, bool inheritRobustBufferAccess)
+{
+	VkPipelineRobustnessBufferBehaviorEXT storageBehavior = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
+	VkPipelineRobustnessBufferBehaviorEXT uniformBehavior = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
+	VkPipelineRobustnessBufferBehaviorEXT vertexBehavior = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
+
+	if(overrideRobustness)
+	{
+		storageBehavior = overrideRobustness->storageBuffers;
+		uniformBehavior = overrideRobustness->uniformBuffers;
+		vertexBehavior = overrideRobustness->vertexInputs;
+	}
+	else
+	{
+		inheritRobustBufferAccess = deviceRobustBufferAccess;
+	}
+
+	bool storageRobustBufferAccess = getRobustBufferAccess(storageBehavior, inheritRobustBufferAccess);
+	bool uniformRobustBufferAccess = getRobustBufferAccess(uniformBehavior, inheritRobustBufferAccess);
+	bool vertexRobustBufferAccess = getRobustBufferAccess(vertexBehavior, inheritRobustBufferAccess);
+
+	// Note: in the initial implementation, enabling robust access for any buffer enables it for
+	// all.  TODO(b/185122256) split robustBufferAccess in the pipeline and shaders into three
+	// categories and provide robustness for storage, uniform and vertex buffers accordingly.
+	return storageRobustBufferAccess || uniformRobustBufferAccess || vertexRobustBufferAccess;
+}
+
+bool getPipelineRobustBufferAccess(const void *pNext, vk::Device *device)
+{
+	const VkPipelineRobustnessCreateInfoEXT *overrideRobustness = vk::GetExtendedStruct<VkPipelineRobustnessCreateInfoEXT>(pNext, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT);
+	const bool deviceRobustBufferAccess = device->getEnabledFeatures().robustBufferAccess;
+
+	// For pipelines, there's no robustBufferAccess to inherit from.  Default and no-override
+	// both lead to using the device's robustBufferAccess.
+	return getRobustBufferAccess(overrideRobustness, deviceRobustBufferAccess, deviceRobustBufferAccess);
+}
+
+bool getPipelineStageRobustBufferAccess(const void *pNext, vk::Device *device, bool pipelineRobustBufferAccess)
+{
+	const VkPipelineRobustnessCreateInfoEXT *overrideRobustness = vk::GetExtendedStruct<VkPipelineRobustnessCreateInfoEXT>(pNext, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT);
+	const bool deviceRobustBufferAccess = device->getEnabledFeatures().robustBufferAccess;
+
+	return getRobustBufferAccess(overrideRobustness, deviceRobustBufferAccess, pipelineRobustBufferAccess);
+}
+
 }  // anonymous namespace
 
 namespace vk {
-
-Pipeline::Pipeline(PipelineLayout *layout, Device *device)
+Pipeline::Pipeline(PipelineLayout *layout, Device *device, bool robustBufferAccess)
     : layout(layout)
     , device(device)
-    , robustBufferAccess(device->getEnabledFeatures().robustBufferAccess)
+    , robustBufferAccess(robustBufferAccess)
 {
 	layout->incRefCount();
 }
@@ -271,8 +331,8 @@ void Pipeline::destroy(const VkAllocationCallbacks *pAllocator)
 }
 
 GraphicsPipeline::GraphicsPipeline(const VkGraphicsPipelineCreateInfo *pCreateInfo, void *mem, Device *device)
-    : Pipeline(vk::Cast(pCreateInfo->layout), device)
-    , state(device, pCreateInfo, layout, robustBufferAccess)
+    : Pipeline(vk::Cast(pCreateInfo->layout), device, getPipelineRobustBufferAccess(pCreateInfo->pNext, device))
+    , state(device, pCreateInfo, layout)
     , inputs(pCreateInfo->pVertexInputState)
 {
 }
@@ -290,14 +350,21 @@ size_t GraphicsPipeline::ComputeRequiredAllocationSize(const VkGraphicsPipelineC
 
 void GraphicsPipeline::getIndexBuffers(const vk::DynamicState &dynamicState, uint32_t count, uint32_t first, bool indexed, std::vector<std::pair<uint32_t, void *>> *indexBuffers) const
 {
-	VkPrimitiveTopology topology = state.hasDynamicTopology() ? dynamicState.primitiveTopology : state.getTopology();
-	indexBuffer.getIndexBuffers(topology, count, first, indexed, state.hasPrimitiveRestartEnable(), indexBuffers);
+	const vk::VertexInputInterfaceState &vertexInputInterfaceState = state.getVertexInputInterfaceState();
+
+	const VkPrimitiveTopology topology = vertexInputInterfaceState.hasDynamicTopology() ? dynamicState.primitiveTopology : vertexInputInterfaceState.getTopology();
+	const bool hasPrimitiveRestartEnable = vertexInputInterfaceState.hasDynamicPrimitiveRestartEnable() ? dynamicState.primitiveRestartEnable : vertexInputInterfaceState.hasPrimitiveRestartEnable();
+	indexBuffer.getIndexBuffers(topology, count, first, indexed, hasPrimitiveRestartEnable, indexBuffers);
 }
 
-bool GraphicsPipeline::containsImageWrite() const
+bool GraphicsPipeline::preRasterizationContainsImageWrite() const
 {
-	return (vertexShader.get() && vertexShader->containsImageWrite()) ||
-	       (fragmentShader.get() && fragmentShader->containsImageWrite());
+	return vertexShader.get() && vertexShader->containsImageWrite();
+}
+
+bool GraphicsPipeline::fragmentContainsImageWrite() const
+{
+	return fragmentShader.get() && fragmentShader->containsImageWrite();
 }
 
 void GraphicsPipeline::setShader(const VkShaderStageFlagBits &stage, const std::shared_ptr<sw::SpirvShader> spirvShader)
@@ -348,7 +415,7 @@ VkResult GraphicsPipeline::compileShaders(const VkAllocationCallbacks *pAllocato
 		    ~(VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT |
 		      VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT)) != 0)
 		{
-			UNSUPPORTED("pStage->flags %d", int(stageInfo.flags));
+			UNSUPPORTED("pStage->flags 0x%08X", int(stageInfo.flags));
 		}
 
 		auto dbgctx = device->getDebuggerContext();
@@ -387,9 +454,11 @@ VkResult GraphicsPipeline::compileShaders(const VkAllocationCallbacks *pAllocato
 			}
 		}
 
+		const bool stageRobustBufferAccess = getPipelineStageRobustBufferAccess(stageInfo.pNext, device, robustBufferAccess);
+
 		// TODO(b/201798871): use allocator.
 		auto shader = std::make_shared<sw::SpirvShader>(stageInfo.stage, stageInfo.pName, spirv,
-		                                                vk::Cast(pCreateInfo->renderPass), pCreateInfo->subpass, robustBufferAccess, dbgctx, getOrCreateSpirvProfiler());
+		                                                vk::Cast(pCreateInfo->renderPass), pCreateInfo->subpass, stageRobustBufferAccess, dbgctx, getOrCreateSpirvProfiler());
 
 		setShader(stageInfo.stage, shader);
 
@@ -400,7 +469,7 @@ VkResult GraphicsPipeline::compileShaders(const VkAllocationCallbacks *pAllocato
 }
 
 ComputePipeline::ComputePipeline(const VkComputePipelineCreateInfo *pCreateInfo, void *mem, Device *device)
-    : Pipeline(vk::Cast(pCreateInfo->layout), device)
+    : Pipeline(vk::Cast(pCreateInfo->layout), device, getPipelineRobustBufferAccess(pCreateInfo->pNext, device))
 {
 }
 
@@ -461,9 +530,11 @@ VkResult ComputePipeline::compileShaders(const VkAllocationCallbacks *pAllocator
 		}
 	}
 
+	const bool stageRobustBufferAccess = getPipelineStageRobustBufferAccess(stage.pNext, device, robustBufferAccess);
+
 	// TODO(b/201798871): use allocator.
 	shader = std::make_shared<sw::SpirvShader>(stage.stage, stage.pName, spirv,
-	                                           nullptr, 0, robustBufferAccess, dbgctx, getOrCreateSpirvProfiler());
+	                                           nullptr, 0, stageRobustBufferAccess, dbgctx, getOrCreateSpirvProfiler());
 
 	const PipelineCache::ComputeProgramKey programKey(shader->getIdentifier(), layout->identifier);
 

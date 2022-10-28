@@ -37,7 +37,7 @@ class ShaderModule;
 class Pipeline
 {
 public:
-	Pipeline(PipelineLayout *layout, Device *device);
+	Pipeline(PipelineLayout *layout, Device *device, bool robustBufferAccess);
 	virtual ~Pipeline() = default;
 
 	operator VkPipeline()
@@ -98,7 +98,7 @@ public:
 	const GraphicsState getState(const DynamicState &ds) const { return state.combineStates(ds); }
 
 	void getIndexBuffers(const vk::DynamicState &dynamicState, uint32_t count, uint32_t first, bool indexed, std::vector<std::pair<uint32_t, void *>> *indexBuffers) const;
-	bool hasDynamicVertexStride() const { return state.hasDynamicVertexStride(); }
+	bool hasDynamicVertexStride() const { return state.getVertexInputInterfaceState().hasDynamicVertexStride(); }
 
 	IndexBuffer &getIndexBuffer() { return indexBuffer; }
 	const IndexBuffer &getIndexBuffer() const { return indexBuffer; }
@@ -107,7 +107,8 @@ public:
 	Inputs &getInputs() { return inputs; }
 	const Inputs &getInputs() const { return inputs; }
 
-	bool containsImageWrite() const;
+	bool preRasterizationContainsImageWrite() const;
+	bool fragmentContainsImageWrite() const;
 
 	const std::shared_ptr<sw::SpirvShader> getShader(const VkShaderStageFlagBits &stage) const;
 

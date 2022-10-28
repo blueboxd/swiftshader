@@ -153,6 +153,8 @@ private:
 
 class SpirvShader
 {
+	class EmitState;
+
 public:
 	SpirvBinary insns;
 
@@ -380,12 +382,25 @@ public:
 			// Pointer held by SpirvRoutine::pointers
 			Pointer,
 
+			// Combination of an image pointer and a sampler ID
+			SampledImage,
+
 			// A pointer to a vk::DescriptorSet*.
 			// Pointer held by SpirvRoutine::pointers.
 			DescriptorSet,
 		};
 
 		Kind kind = Kind::Unknown;
+	};
+
+	class SampledImagePointer : public SIMD::Pointer
+	{
+	public:
+		SampledImagePointer(SIMD::Pointer image, Object::ID sampler)
+		    : SIMD::Pointer(image)
+		    , samplerId(sampler)
+		{}
+		Object::ID samplerId;
 	};
 
 	// Block is an interval of SPIR-V instructions, starting with the
@@ -606,7 +621,7 @@ public:
 
 	struct ImageInstruction : public ImageInstructionSignature
 	{
-		ImageInstruction(InsnIterator insn, const SpirvShader &spirv);
+		ImageInstruction(InsnIterator insn, const SpirvShader &spirv, EmitState *state);
 
 		const uint32_t position;
 
@@ -654,6 +669,7 @@ public:
 		bool DepthGreater : 1;
 		bool DepthLess : 1;
 		bool DepthUnchanged : 1;
+		bool StencilRefReplacing : 1;
 
 		// Compute workgroup dimensions
 		Object::ID WorkgroupSizeX = 1;
@@ -733,6 +749,7 @@ public:
 		bool UniformTexelBufferArrayNonUniformIndexing : 1;
 		bool UniformTexelBufferArrayDynamicIndexing : 1;
 		bool UniformBufferArrayNonUniformIndex : 1;
+		bool SampledImageArrayNonUniformIndexing : 1;
 		bool PhysicalStorageBufferAddresses : 1;
 	};
 
@@ -934,6 +951,7 @@ public:
 	uint32_t getWorkgroupSizeZ() const;
 
 	bool containsImageWrite() const { return imageWriteEmitted; }
+	bool getRobustBufferAccess() const { return robustBufferAccess; }
 
 	using BuiltInHash = std::hash<std::underlying_type<spv::BuiltIn>::type>;
 	std::unordered_map<spv::BuiltIn, BuiltinMapping, BuiltInHash> inputBuiltins;
@@ -1169,9 +1187,33 @@ private:
 			return it->second;
 		}
 
+		void createSampledImage(Object::ID id, SampledImagePointer ptr)
+		{
+			bool added = sampledImages.emplace(id, ptr).second;
+			ASSERT_MSG(added, "Sampled image %d created twice", id.value());
+		}
+
+		SampledImagePointer const &getSampledImage(Object::ID id) const
+		{
+			auto it = sampledImages.find(id);
+			ASSERT_MSG(it != sampledImages.end(), "Unknown sampled image %d", id.value());
+			return it->second;
+		}
+
+		bool isSampledImage(Object::ID id) const
+		{
+			return sampledImages.find(id) != sampledImages.end();
+		}
+
+		SIMD::Pointer const &getImage(Object::ID id) const
+		{
+			return isSampledImage(id) ? getSampledImage(id) : getPointer(id);
+		}
+
 	private:
 		std::unordered_map<Object::ID, Intermediate> intermediates;
 		std::unordered_map<Object::ID, SIMD::Pointer> pointers;
+		std::unordered_map<Object::ID, SampledImagePointer> sampledImages;
 
 		const unsigned int multiSampleCount;
 	};
@@ -1238,6 +1280,18 @@ private:
 			return (pointer != nullptr);
 		}
 
+		const SampledImagePointer &SampledImage(uint32_t i) const
+		{
+			ASSERT(intermediate == nullptr);
+
+			return sampledImage[i];
+		}
+
+		bool isSampledImage() const
+		{
+			return (sampledImage != nullptr);
+		}
+
 	private:
 		RR_PRINT_ONLY(friend struct rr::PrintValue::Ty<Operand>;)
 
@@ -1247,6 +1301,7 @@ private:
 		const uint32_t *constant;
 		const Intermediate *intermediate;
 		const SIMD::Pointer *pointer;
+		const SampledImagePointer *sampledImage;
 
 	public:
 		const uint32_t componentCount;
@@ -1382,7 +1437,8 @@ private:
 	EmitResult EmitImageTexelPointer(const ImageInstruction &instruction, EmitState *state) const;
 	EmitResult EmitAtomicOp(InsnIterator insn, EmitState *state) const;
 	EmitResult EmitAtomicCompareExchange(InsnIterator insn, EmitState *state) const;
-	EmitResult EmitSampledImageCombineOrSplit(InsnIterator insn, EmitState *state) const;
+	EmitResult EmitSampledImage(InsnIterator insn, EmitState *state) const;
+	EmitResult EmitImage(InsnIterator insn, EmitState *state) const;
 	EmitResult EmitCopyObject(InsnIterator insn, EmitState *state) const;
 	EmitResult EmitCopyMemory(InsnIterator insn, EmitState *state) const;
 	EmitResult EmitControlBarrier(InsnIterator insn, EmitState *state) const;
@@ -1394,7 +1450,9 @@ private:
 	// Emits code to sample an image, regardless of whether any SIMD lanes are active.
 	void EmitImageSampleUnconditional(Array<SIMD::Float> &out, const ImageInstruction &instruction, EmitState *state) const;
 
-	Pointer<Byte> lookupSamplerFunction(Pointer<Byte> imageDescriptor, const ImageInstruction &instruction, EmitState *state) const;
+	Pointer<Byte> getSamplerDescriptor(Pointer<Byte> imageDescriptor, const ImageInstruction &instruction, EmitState *state) const;
+	Pointer<Byte> getSamplerDescriptor(Pointer<Byte> imageDescriptor, const ImageInstruction &instruction, int laneIdx, EmitState *state) const;
+	Pointer<Byte> lookupSamplerFunction(Pointer<Byte> imageDescriptor, Pointer<Byte> samplerDescriptor, const ImageInstruction &instruction, EmitState *state) const;
 	void callSamplerFunction(Pointer<Byte> samplerFunction, Array<SIMD::Float> &out, Pointer<Byte> imageDescriptor, const ImageInstruction &instruction, EmitState *state) const;
 
 	void GetImageDimensions(EmitState const *state, Type const &resultTy, Object::ID imageId, Object::ID lodId, Intermediate &dst) const;
@@ -1469,12 +1527,6 @@ private:
 	static SIMD::Int SUDot(unsigned numComponents, Operand const &x, Operand const &y, Operand const *accum);
 	static SIMD::Int AddSat(RValue<SIMD::Int> a, RValue<SIMD::Int> b);
 	static SIMD::UInt AddSat(RValue<SIMD::UInt> a, RValue<SIMD::UInt> b);
-
-	// Splits x into a floating-point significand in the range [0.5, 1.0)
-	// and an integral exponent of two, such that:
-	//   x = significand * 2^exponent
-	// Returns the pair <significand, exponent>
-	std::pair<SIMD::Float, SIMD::Int> Frexp(RValue<SIMD::Float> val) const;
 
 	static ImageSampler *getImageSampler(const vk::Device *device, uint32_t signature, uint32_t samplerId, uint32_t imageViewId);
 	static std::shared_ptr<rr::Routine> emitSamplerRoutine(ImageInstructionSignature instruction, const Sampler &samplerState);

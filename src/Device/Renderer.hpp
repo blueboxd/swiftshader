@@ -87,7 +87,6 @@ struct DrawData
 	float constantDepthBias;
 	float slopeDepthBias;
 	float depthBiasClamp;
-	bool depthClipEnable;
 
 	unsigned int *colorBuffer[MAX_COLOR_BUFFERS];
 	int colorPitchB[MAX_COLOR_BUFFERS];
@@ -110,6 +109,8 @@ struct DrawData
 	float a2c3;
 
 	vk::Pipeline::PushConstantStorage pushConstants;
+
+	bool rasterizerDiscard;
 };
 
 struct DrawCall
@@ -154,11 +155,13 @@ struct DrawCall
 	VkLineRasterizationModeEXT lineRasterizationMode;
 
 	bool depthClipEnable;
+	bool depthClipNegativeOneToOne;
 
 	VertexProcessor::RoutineType vertexRoutine;
 	SetupProcessor::RoutineType setupRoutine;
 	PixelProcessor::RoutineType pixelRoutine;
-	bool containsImageWrite;
+	bool preRasterizationContainsImageWrite;
+	bool fragmentContainsImageWrite;
 
 	SetupFunction setupPrimitives;
 	SetupProcessor::State setupState;
