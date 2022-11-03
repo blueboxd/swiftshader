@@ -146,17 +146,16 @@ private:
 #endif  // ENABLE_RR_PRINT
 };
 
-class SpirvShader
+// The Spirv class parses a SPIR-V binary and provides utilities for retrieving
+// information about instructions, objects, types, etc.
+class Spirv
 {
 public:
-	SpirvShader(VkShaderStageFlagBits stage,
-	            const char *entryPointName,
-	            const SpirvBinary &insns,
-	            const vk::RenderPass *renderPass,
-	            uint32_t subpassIndex,
-	            bool robustBufferAccess);
+	Spirv(VkShaderStageFlagBits stage,
+	      const char *entryPointName,
+	      const SpirvBinary &insns);
 
-	~SpirvShader();
+	~Spirv();
 
 	SpirvBinary insns;
 
@@ -753,7 +752,6 @@ public:
 	};
 
 	std::unordered_map<Object::ID, DescriptorDecorations> descriptorDecorations;
-	std::vector<vk::Format> inputAttachmentFormats;
 
 	struct InterfaceComponent
 	{
@@ -813,24 +811,14 @@ public:
 	std::vector<InterfaceComponent> inputs;
 	std::vector<InterfaceComponent> outputs;
 
-	// TODO(b/247020580): Move to SpirvRoutine
-	void emitProlog(SpirvRoutine *routine) const;
-	void emit(SpirvRoutine *routine, const RValue<SIMD::Int> &activeLaneMask, const RValue<SIMD::Int> &storesAndAtomicsMask, const vk::DescriptorSet::Bindings &descriptorSets, unsigned int multiSampleCount = 0) const;
-	void emitEpilog(SpirvRoutine *routine) const;
-
 	uint32_t getWorkgroupSizeX() const;
 	uint32_t getWorkgroupSizeY() const;
 	uint32_t getWorkgroupSizeZ() const;
-
-	bool getRobustBufferAccess() const { return robustBufferAccess; }
 
 	using BuiltInHash = std::hash<std::underlying_type<spv::BuiltIn>::type>;
 	std::unordered_map<spv::BuiltIn, BuiltinMapping, BuiltInHash> inputBuiltins;
 	std::unordered_map<spv::BuiltIn, BuiltinMapping, BuiltInHash> outputBuiltins;
 	WorkgroupMemory workgroupMemory;
-
-private:
-	const bool robustBufferAccess;
 
 	Function::ID entryPoint;
 	spv::ExecutionModel executionModel = spv::ExecutionModelMax;  // Invalid prior to OpEntryPoint parsing.
@@ -865,9 +853,6 @@ public:
 
 	// Creates an Object for the instruction's result in 'defs'.
 	void DefineResult(const InsnIterator &insn);
-
-	// Output storage buffers and images should not be affected by helper invocations
-	static bool StoresInHelperInvocation(spv::StorageClass storageClass);
 
 	using InterfaceVisitor = std::function<void(Decorations const, AttribType)>;
 
@@ -943,8 +928,6 @@ public:
 		return it->second;
 	}
 
-	OutOfBoundsBehavior getOutOfBoundsBehavior(Object::ID pointerId, const vk::PipelineLayout *pipelineLayout) const;
-
 	// Returns the *component* offset in the literal for the given access chain.
 	uint32_t WalkLiteralAccessChain(Type::ID id, const Span &indexes) const;
 
@@ -977,24 +960,55 @@ public:
 	// Returns 0 when invalid.
 	static VkShaderStageFlagBits executionModelToStage(spv::ExecutionModel model);
 
+	static bool StoresInHelperInvocationsHaveNoEffect(spv::StorageClass storageClass);
 	static bool IsExplicitLayout(spv::StorageClass storageClass);
 	static bool IsTerminator(spv::Op opcode);
+};
+
+// The SpirvShader class holds a parsed SPIR-V shader but also the pipeline
+// state which affects code emission when passing it to SpirvEmitter.
+class SpirvShader : public Spirv
+{
+public:
+	SpirvShader(VkShaderStageFlagBits stage,
+	            const char *entryPointName,
+	            const SpirvBinary &insns,
+	            const vk::RenderPass *renderPass,
+	            uint32_t subpassIndex,
+	            bool robustBufferAccess);
+
+	~SpirvShader();
+
+	// TODO(b/247020580): Move to SpirvRoutine
+	void emitProlog(SpirvRoutine *routine) const;
+	void emit(SpirvRoutine *routine, const RValue<SIMD::Int> &activeLaneMask, const RValue<SIMD::Int> &storesAndAtomicsMask, const vk::DescriptorSet::Bindings &descriptorSets, unsigned int multiSampleCount = 0) const;
+	void emitEpilog(SpirvRoutine *routine) const;
+
+	bool getRobustBufferAccess() const { return robustBufferAccess; }
+	OutOfBoundsBehavior getOutOfBoundsBehavior(Object::ID pointerId, const vk::PipelineLayout *pipelineLayout) const;
+
+	vk::Format getInputAttachmentFormat(int32_t index) const { return inputAttachmentFormats[index]; }
+
+private:
+	const bool robustBufferAccess;
+
+	std::vector<vk::Format> inputAttachmentFormats;
 };
 
 // The SpirvEmitter class translates the parsed SPIR-V shader into Reactor code.
 class SpirvEmitter
 {
-	using Type = SpirvShader::Type;
-	using Object = SpirvShader::Object;
-	using Block = SpirvShader::Block;
-	using InsnIterator = SpirvShader::InsnIterator;
-	using Decorations = SpirvShader::Decorations;
-	using Span = SpirvShader::Span;
+	using Type = Spirv::Type;
+	using Object = Spirv::Object;
+	using Block = Spirv::Block;
+	using InsnIterator = Spirv::InsnIterator;
+	using Decorations = Spirv::Decorations;
+	using Span = Spirv::Span;
 
 public:
 	static void emit(const SpirvShader &shader,
 	                 SpirvRoutine *routine,
-	                 SpirvShader::Function::ID entryPoint,
+	                 Spirv::Function::ID entryPoint,
 	                 RValue<SIMD::Int> activeLaneMask,
 	                 RValue<SIMD::Int> storesAndAtomicsMask,
 	                 const vk::DescriptorSet::Bindings &descriptorSets,
@@ -1009,7 +1023,7 @@ public:
 private:
 	SpirvEmitter(const SpirvShader &shader,
 	             SpirvRoutine *routine,
-	             SpirvShader::Function::ID entryPoint,
+	             Spirv::Function::ID entryPoint,
 	             RValue<SIMD::Int> activeLaneMask,
 	             RValue<SIMD::Int> storesAndAtomicsMask,
 	             const vk::DescriptorSet::Bindings &descriptorSets,
@@ -1137,7 +1151,7 @@ private:
 
 	struct ImageInstruction : public ImageInstructionSignature
 	{
-		ImageInstruction(InsnIterator insn, const SpirvShader &shader, const SpirvEmitter &state);
+		ImageInstruction(InsnIterator insn, const Spirv &shader, const SpirvEmitter &state);
 
 		const uint32_t position;
 
@@ -1177,7 +1191,7 @@ private:
 	class Operand
 	{
 	public:
-		Operand(const SpirvShader &shader, const SpirvEmitter &state, Object::ID objectId);
+		Operand(const Spirv &shader, const SpirvEmitter &state, Object::ID objectId);
 		Operand(const Intermediate &value);
 
 		RValue<SIMD::Float> Float(uint32_t i) const
@@ -1509,11 +1523,11 @@ private:
 
 	const SpirvShader &shader;
 	SpirvRoutine *const routine;                     // The current routine being built.
-	SpirvShader::Function::ID function;              // The current function being built.
+	Spirv::Function::ID function;                    // The current function being built.
 	Block::ID block;                                 // The current block being built.
 	rr::Value *activeLaneMaskValue = nullptr;        // The current active lane mask.
 	rr::Value *storesAndAtomicsMaskValue = nullptr;  // The current atomics mask.
-	SpirvShader::Block::Set visited;                 // Blocks already built.
+	Spirv::Block::Set visited;                       // Blocks already built.
 	std::unordered_map<Block::Edge, RValue<SIMD::Int>, Block::Edge::Hash> edgeActiveLaneMasks;
 	std::deque<Block::ID> *pending;
 
@@ -1529,7 +1543,7 @@ private:
 
 class SpirvRoutine
 {
-	using Object = SpirvShader::Object;
+	using Object = Spirv::Object;
 
 public:
 	SpirvRoutine(const vk::PipelineLayout *pipelineLayout);
@@ -1624,7 +1638,7 @@ public:
 	// setInputBuiltin() calls f() with the builtin and value if the shader
 	// uses the input builtin, otherwise the call is a no-op.
 	// F is a function with the signature:
-	// void(const SpirvShader::BuiltinMapping& builtin, Array<SIMD::Float>& value)
+	// void(const Spirv::BuiltinMapping& builtin, Array<SIMD::Float>& value)
 	template<typename F>
 	inline void setInputBuiltin(const SpirvShader *shader, spv::BuiltIn id, F &&f)
 	{

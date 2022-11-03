@@ -27,33 +27,15 @@
 
 namespace sw {
 
-SpirvShader::SpirvShader(
+Spirv::Spirv(
     VkShaderStageFlagBits pipelineStage,
     const char *entryPointName,
-    const SpirvBinary &insns,
-    const vk::RenderPass *renderPass,
-    uint32_t subpassIndex,
-    bool robustBufferAccess)
+    const SpirvBinary &insns)
     : insns{ insns }
     , inputs{ MAX_INTERFACE_COMPONENTS }
     , outputs{ MAX_INTERFACE_COMPONENTS }
-    , robustBufferAccess(robustBufferAccess)
 {
 	ASSERT(insns.size() > 0);
-
-	if(renderPass)
-	{
-		// capture formats of any input attachments present
-		auto subpass = renderPass->getSubpass(subpassIndex);
-		inputAttachmentFormats.reserve(subpass.inputAttachmentCount);
-		for(auto i = 0u; i < subpass.inputAttachmentCount; i++)
-		{
-			auto attachmentIndex = subpass.pInputAttachments[i].attachment;
-			inputAttachmentFormats.push_back(attachmentIndex != VK_ATTACHMENT_UNUSED
-			                                     ? renderPass->getAttachment(attachmentIndex).format
-			                                     : VK_FORMAT_UNDEFINED);
-		}
-	}
 
 	// The identifiers of all OpVariables that define the entry point's IO variables.
 	std::unordered_set<Object::ID> interfaceIds;
@@ -845,11 +827,11 @@ SpirvShader::SpirvShader(
 #endif
 }
 
-SpirvShader::~SpirvShader()
+Spirv::~Spirv()
 {
 }
 
-void SpirvShader::DeclareType(InsnIterator insn)
+void Spirv::DeclareType(InsnIterator insn)
 {
 	Type::ID resultId = insn.word(1);
 
@@ -901,7 +883,7 @@ void SpirvShader::DeclareType(InsnIterator insn)
 	}
 }
 
-SpirvShader::Object &SpirvShader::CreateConstant(InsnIterator insn)
+Spirv::Object &Spirv::CreateConstant(InsnIterator insn)
 {
 	Type::ID typeId = insn.word(1);
 	Object::ID resultId = insn.word(2);
@@ -914,7 +896,7 @@ SpirvShader::Object &SpirvShader::CreateConstant(InsnIterator insn)
 	return object;
 }
 
-void SpirvShader::ProcessInterfaceVariable(Object &object)
+void Spirv::ProcessInterfaceVariable(Object &object)
 {
 	auto &objectTy = getType(object);
 	ASSERT(objectTy.storageClass == spv::StorageClassInput || objectTy.storageClass == spv::StorageClassOutput);
@@ -977,7 +959,7 @@ void SpirvShader::ProcessInterfaceVariable(Object &object)
 	}
 }
 
-uint32_t SpirvShader::GetNumInputComponents(int32_t location) const
+uint32_t Spirv::GetNumInputComponents(int32_t location) const
 {
 	ASSERT(location >= 0);
 
@@ -996,7 +978,7 @@ uint32_t SpirvShader::GetNumInputComponents(int32_t location) const
 	return num_components_per_input;
 }
 
-uint32_t SpirvShader::GetPackedInterpolant(int32_t location) const
+uint32_t Spirv::GetPackedInterpolant(int32_t location) const
 {
 	ASSERT(location >= 0);
 	const uint32_t maxInterpolant = (location << 2);
@@ -1014,7 +996,7 @@ uint32_t SpirvShader::GetPackedInterpolant(int32_t location) const
 	return packedInterpolant;
 }
 
-void SpirvShader::ProcessExecutionMode(InsnIterator insn)
+void Spirv::ProcessExecutionMode(InsnIterator insn)
 {
 	Function::ID function = insn.word(1);
 	if(function != entryPoint)
@@ -1064,22 +1046,22 @@ void SpirvShader::ProcessExecutionMode(InsnIterator insn)
 	}
 }
 
-uint32_t SpirvShader::getWorkgroupSizeX() const
+uint32_t Spirv::getWorkgroupSizeX() const
 {
 	return executionModes.useWorkgroupSizeId ? getObject(executionModes.WorkgroupSizeX).constantValue[0] : executionModes.WorkgroupSizeX.value();
 }
 
-uint32_t SpirvShader::getWorkgroupSizeY() const
+uint32_t Spirv::getWorkgroupSizeY() const
 {
 	return executionModes.useWorkgroupSizeId ? getObject(executionModes.WorkgroupSizeY).constantValue[0] : executionModes.WorkgroupSizeY.value();
 }
 
-uint32_t SpirvShader::getWorkgroupSizeZ() const
+uint32_t Spirv::getWorkgroupSizeZ() const
 {
 	return executionModes.useWorkgroupSizeId ? getObject(executionModes.WorkgroupSizeZ).constantValue[0] : executionModes.WorkgroupSizeZ.value();
 }
 
-uint32_t SpirvShader::ComputeTypeSize(InsnIterator insn)
+uint32_t Spirv::ComputeTypeSize(InsnIterator insn)
 {
 	// Types are always built from the bottom up (with the exception of forward ptrs, which
 	// don't appear in Vulkan shaders. Therefore, we can always assume our component parts have
@@ -1138,7 +1120,7 @@ uint32_t SpirvShader::ComputeTypeSize(InsnIterator insn)
 	}
 }
 
-int SpirvShader::VisitInterfaceInner(Type::ID id, Decorations d, const InterfaceVisitor &f) const
+int Spirv::VisitInterfaceInner(Type::ID id, Decorations d, const InterfaceVisitor &f) const
 {
 	// Recursively walks variable definition and its type tree, taking into account
 	// any explicit Location or Component decorations encountered; where explicit
@@ -1209,7 +1191,7 @@ int SpirvShader::VisitInterfaceInner(Type::ID id, Decorations d, const Interface
 	}
 }
 
-void SpirvShader::VisitInterface(Object::ID id, const InterfaceVisitor &f) const
+void Spirv::VisitInterface(Object::ID id, const InterfaceVisitor &f) const
 {
 	// Walk a variable definition and call f for each component in it.
 	Decorations d = GetDecorationsForId(id);
@@ -1219,7 +1201,7 @@ void SpirvShader::VisitInterface(Object::ID id, const InterfaceVisitor &f) const
 	VisitInterfaceInner(def.word(1), d, f);
 }
 
-void SpirvShader::ApplyDecorationsForAccessChain(Decorations *d, DescriptorDecorations *dd, Object::ID baseId, const Span &indexIds) const
+void Spirv::ApplyDecorationsForAccessChain(Decorations *d, DescriptorDecorations *dd, Object::ID baseId, const Span &indexIds) const
 {
 	ApplyDecorationsForId(d, baseId);
 	auto &baseObject = getObject(baseId);
@@ -1487,7 +1469,7 @@ SIMD::Pointer SpirvEmitter::WalkAccessChain(Object::ID baseId, Object::ID elemen
 	return ptr;
 }
 
-uint32_t SpirvShader::WalkLiteralAccessChain(Type::ID typeId, const Span &indexes) const
+uint32_t Spirv::WalkLiteralAccessChain(Type::ID typeId, const Span &indexes) const
 {
 	uint32_t componentOffset = 0;
 
@@ -1529,7 +1511,7 @@ uint32_t SpirvShader::WalkLiteralAccessChain(Type::ID typeId, const Span &indexe
 	return componentOffset;
 }
 
-void SpirvShader::Decorations::Apply(spv::Decoration decoration, uint32_t arg)
+void Spirv::Decorations::Apply(spv::Decoration decoration, uint32_t arg)
 {
 	switch(decoration)
 	{
@@ -1592,7 +1574,7 @@ void SpirvShader::Decorations::Apply(spv::Decoration decoration, uint32_t arg)
 	}
 }
 
-void SpirvShader::Decorations::Apply(const Decorations &src)
+void Spirv::Decorations::Apply(const Decorations &src)
 {
 	// Apply a decoration group to this set of decorations
 	if(src.HasBuiltIn)
@@ -1647,7 +1629,7 @@ void SpirvShader::Decorations::Apply(const Decorations &src)
 	NonUniform |= src.NonUniform;
 }
 
-void SpirvShader::DescriptorDecorations::Apply(const sw::SpirvShader::DescriptorDecorations &src)
+void Spirv::DescriptorDecorations::Apply(const sw::Spirv::DescriptorDecorations &src)
 {
 	if(src.DescriptorSet >= 0)
 	{
@@ -1665,7 +1647,7 @@ void SpirvShader::DescriptorDecorations::Apply(const sw::SpirvShader::Descriptor
 	}
 }
 
-SpirvShader::Decorations SpirvShader::GetDecorationsForId(TypeOrObjectID id) const
+Spirv::Decorations Spirv::GetDecorationsForId(TypeOrObjectID id) const
 {
 	Decorations d;
 	ApplyDecorationsForId(&d, id);
@@ -1673,7 +1655,7 @@ SpirvShader::Decorations SpirvShader::GetDecorationsForId(TypeOrObjectID id) con
 	return d;
 }
 
-void SpirvShader::ApplyDecorationsForId(Decorations *d, TypeOrObjectID id) const
+void Spirv::ApplyDecorationsForId(Decorations *d, TypeOrObjectID id) const
 {
 	auto it = decorations.find(id);
 	if(it != decorations.end())
@@ -1682,7 +1664,7 @@ void SpirvShader::ApplyDecorationsForId(Decorations *d, TypeOrObjectID id) const
 	}
 }
 
-void SpirvShader::ApplyDecorationsForIdMember(Decorations *d, Type::ID id, uint32_t member) const
+void Spirv::ApplyDecorationsForIdMember(Decorations *d, Type::ID id, uint32_t member) const
 {
 	auto it = memberDecorations.find(id);
 	if(it != memberDecorations.end() && member < it->second.size())
@@ -1691,7 +1673,7 @@ void SpirvShader::ApplyDecorationsForIdMember(Decorations *d, Type::ID id, uint3
 	}
 }
 
-void SpirvShader::DefineResult(const InsnIterator &insn)
+void Spirv::DefineResult(const InsnIterator &insn)
 {
 	Type::ID typeId = insn.word(1);
 	Object::ID resultId = insn.word(2);
@@ -1820,9 +1802,37 @@ void SpirvShader::emit(SpirvRoutine *routine, const RValue<SIMD::Int> &activeLan
 	SpirvEmitter::emit(*this, routine, entryPoint, activeLaneMask, storesAndAtomicsMask, descriptorSets, multiSampleCount);
 }
 
+SpirvShader::SpirvShader(VkShaderStageFlagBits stage,
+                         const char *entryPointName,
+                         const SpirvBinary &insns,
+                         const vk::RenderPass *renderPass,
+                         uint32_t subpassIndex,
+                         bool robustBufferAccess)
+    : Spirv(stage, entryPointName, insns)
+    , robustBufferAccess(robustBufferAccess)
+{
+	if(renderPass)
+	{
+		// capture formats of any input attachments present
+		auto subpass = renderPass->getSubpass(subpassIndex);
+		inputAttachmentFormats.reserve(subpass.inputAttachmentCount);
+		for(auto i = 0u; i < subpass.inputAttachmentCount; i++)
+		{
+			auto attachmentIndex = subpass.pInputAttachments[i].attachment;
+			inputAttachmentFormats.push_back(attachmentIndex != VK_ATTACHMENT_UNUSED
+			                                     ? renderPass->getAttachment(attachmentIndex).format
+			                                     : VK_FORMAT_UNDEFINED);
+		}
+	}
+}
+
+SpirvShader::~SpirvShader()
+{
+}
+
 SpirvEmitter::SpirvEmitter(const SpirvShader &shader,
                            SpirvRoutine *routine,
-                           SpirvShader::Function::ID entryPoint,
+                           Spirv::Function::ID entryPoint,
                            RValue<SIMD::Int> activeLaneMask,
                            RValue<SIMD::Int> storesAndAtomicsMask,
                            const vk::DescriptorSet::Bindings &descriptorSets,
@@ -1839,7 +1849,7 @@ SpirvEmitter::SpirvEmitter(const SpirvShader &shader,
 
 void SpirvEmitter::emit(const SpirvShader &shader,
                         SpirvRoutine *routine,
-                        SpirvShader::Function::ID entryPoint,
+                        Spirv::Function::ID entryPoint,
                         RValue<SIMD::Int> activeLaneMask,
                         RValue<SIMD::Int> storesAndAtomicsMask,
                         const vk::DescriptorSet::Bindings &descriptorSets,
@@ -2687,9 +2697,9 @@ void SpirvEmitter::EmitExtendedInstruction(InsnIterator insn)
 	auto ext = shader.getExtension(insn.word(3));
 	switch(ext.name)
 	{
-	case SpirvShader::Extension::GLSLstd450:
+	case Spirv::Extension::GLSLstd450:
 		return EmitExtGLSLstd450(insn);
-	case SpirvShader::Extension::NonSemanticInfo:
+	case Spirv::Extension::NonSemanticInfo:
 		// An extended set name which is prefixed with "NonSemantic." is
 		// guaranteed to contain only non-semantic instructions and all
 		// OpExtInst instructions referencing this set can be ignored.
@@ -2699,7 +2709,7 @@ void SpirvEmitter::EmitExtendedInstruction(InsnIterator insn)
 	}
 }
 
-uint32_t SpirvShader::GetConstScalarInt(Object::ID id) const
+uint32_t Spirv::GetConstScalarInt(Object::ID id) const
 {
 	auto &scopeObj = getObject(id);
 	ASSERT(scopeObj.kind == Object::Kind::Constant);
@@ -2732,7 +2742,7 @@ void SpirvShader::emitEpilog(SpirvRoutine *routine) const
 	}
 }
 
-VkShaderStageFlagBits SpirvShader::executionModelToStage(spv::ExecutionModel model)
+VkShaderStageFlagBits Spirv::executionModelToStage(spv::ExecutionModel model)
 {
 	switch(model)
 	{
@@ -2757,7 +2767,7 @@ VkShaderStageFlagBits SpirvShader::executionModelToStage(spv::ExecutionModel mod
 	}
 }
 
-SpirvEmitter::Operand::Operand(const SpirvShader &shader, const SpirvEmitter &state, Object::ID objectId)
+SpirvEmitter::Operand::Operand(const Spirv &shader, const SpirvEmitter &state, Object::ID objectId)
     : Operand(state, shader.getObject(objectId))
 {}
 
@@ -2777,7 +2787,7 @@ SpirvEmitter::Operand::Operand(const Intermediate &value)
 {
 }
 
-bool SpirvShader::Object::isConstantZero() const
+bool Spirv::Object::isConstantZero() const
 {
 	if(kind != Kind::Constant)
 	{
@@ -2802,12 +2812,12 @@ SpirvRoutine::SpirvRoutine(const vk::PipelineLayout *pipelineLayout)
 
 void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 {
-	setInputBuiltin(shader, spv::BuiltInSubgroupLocalInvocationId, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupLocalInvocationId, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 1);
 		value[builtin.FirstComponent] = As<SIMD::Float>(SIMD::Int(0, 1, 2, 3));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInSubgroupEqMask, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupEqMask, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 4);
 		value[builtin.FirstComponent + 0] = As<SIMD::Float>(SIMD::Int(1, 2, 4, 8));
 		value[builtin.FirstComponent + 1] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
@@ -2815,7 +2825,7 @@ void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 		value[builtin.FirstComponent + 3] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInSubgroupGeMask, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupGeMask, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 4);
 		value[builtin.FirstComponent + 0] = As<SIMD::Float>(SIMD::Int(15, 14, 12, 8));
 		value[builtin.FirstComponent + 1] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
@@ -2823,7 +2833,7 @@ void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 		value[builtin.FirstComponent + 3] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInSubgroupGtMask, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupGtMask, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 4);
 		value[builtin.FirstComponent + 0] = As<SIMD::Float>(SIMD::Int(14, 12, 8, 0));
 		value[builtin.FirstComponent + 1] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
@@ -2831,7 +2841,7 @@ void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 		value[builtin.FirstComponent + 3] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInSubgroupLeMask, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupLeMask, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 4);
 		value[builtin.FirstComponent + 0] = As<SIMD::Float>(SIMD::Int(1, 3, 7, 15));
 		value[builtin.FirstComponent + 1] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
@@ -2839,7 +2849,7 @@ void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 		value[builtin.FirstComponent + 3] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInSubgroupLtMask, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInSubgroupLtMask, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 4);
 		value[builtin.FirstComponent + 0] = As<SIMD::Float>(SIMD::Int(0, 1, 3, 7));
 		value[builtin.FirstComponent + 1] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
@@ -2847,7 +2857,7 @@ void SpirvRoutine::setImmutableInputBuiltins(const SpirvShader *shader)
 		value[builtin.FirstComponent + 3] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
 	});
 
-	setInputBuiltin(shader, spv::BuiltInDeviceIndex, [&](const SpirvShader::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
+	setInputBuiltin(shader, spv::BuiltInDeviceIndex, [&](const Spirv::BuiltinMapping &builtin, Array<SIMD::Float> &value) {
 		ASSERT(builtin.SizeInComponents == 1);
 		// Only a single physical device is supported.
 		value[builtin.FirstComponent] = As<SIMD::Float>(SIMD::Int(0, 0, 0, 0));
